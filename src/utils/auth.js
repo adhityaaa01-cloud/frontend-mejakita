@@ -1,6 +1,6 @@
 // ─── CONFIG ───
-export const API = 'http://localhost:3000/api'
-export const CDN = 'http://localhost:3000/uploads'
+export const API = 'https://backend-mejakita.onrender.com/api'
+export const CDN = 'https://backend-mejakita.onrender.com/uploads'
 export const PH  = 'https://placehold.co/200x138/FFD54F/5D4037?text=%F0%9F%8D%BD%EF%B8%8F'
 export const PHS = 'https://placehold.co/58x58/FFD54F/5D4037?text=F'
 
