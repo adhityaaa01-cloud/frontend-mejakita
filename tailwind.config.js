@@ -23,6 +23,19 @@ export default {
         rd2: '#FFEBEE',
         bl:  '#1E88E5',
         bl2: '#E3F2FD',
+        // Premium SaaS Palette
+        premium: {
+          orange: '#FF6B00',
+          orangeLight: '#FF8C00',
+          orangePale: '#FFB347',
+          cream: '#FFF7E8',
+          creamDark: '#FFF3E0',
+          white: '#FFFFFF',
+          gray50: '#F8F9FA',
+          gray200: '#E5E7EB',
+          gray700: '#374151',
+          gray900: '#111827',
+        }
       },
       keyframes: {
         fadeUp:    { from: { opacity: 0, transform: 'translateY(20px)' }, to: { opacity: 1, transform: 'translateY(0)' } },
@@ -32,6 +45,11 @@ export default {
         bounceIn:  { '0%': { transform: 'scale(.3)', opacity: 0 }, '55%': { transform: 'scale(1.07)' }, '75%': { transform: 'scale(.95)' }, '100%': { transform: 'scale(1)', opacity: 1 } },
         pulse2:    { '0%,100%': { transform: 'scale(1)' }, '50%': { transform: 'scale(1.04)' } },
         float:     { '0%,100%': { transform: 'translateY(0)' }, '50%': { transform: 'translateY(-12px)' } },
+        floatSlow: { 
+          '0%, 100%': { transform: 'translate(0, 0)' },
+          '33%': { transform: 'translate(20px, -30px)' },
+          '66%': { transform: 'translate(-15px, 15px)' },
+        },
         spin2:     { to: { transform: 'rotate(360deg)' } },
         shimmer:   { '0%': { backgroundPosition: '-400px 0' }, '100%': { backgroundPosition: '400px 0' } },
         dotBounce: { '0%,80%,100%': { transform: 'translateY(0)' }, '40%': { transform: 'translateY(-9px)' } },
@@ -48,6 +66,7 @@ export default {
         zoomIn:     'zoomIn .28s ease',
         bounceIn:   'bounceIn .5s ease',
         float:      'float 3.5s ease-in-out infinite',
+        floatSlow:  'floatSlow 8s ease-in-out infinite',
         shimmer:    'shimmer 1.6s infinite',
         dotBounce:  'dotBounce 1.4s ease-in-out infinite',
         toastIn:    'toastIn .3s ease',
