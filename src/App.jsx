@@ -158,8 +158,8 @@ export default function App() {
   useEffect(() => {
     ;(async () => {
       try {
+        // Public endpoint, no authH() needed to avoid "Bearer null" issues
         const r = await fetch(`${API}/menu`, { 
-          headers: authH(),
           cache: 'no-store'
         })
         const d = await r.json()

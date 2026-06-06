@@ -171,7 +171,6 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
   const fetchMenus = useCallback(async () => {
     try {
       const r = await fetch(`${API}/menu`, { 
-        headers: authH(),
         cache: 'no-store'
       })
       const d = await r.json()
