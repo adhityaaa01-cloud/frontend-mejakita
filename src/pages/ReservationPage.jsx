@@ -1,9 +1,10 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Calendar, Users, Clock, Phone, User, Send, CheckCircle2, X, LayoutDashboard, Coffee, Utensils, Plus, Minus, Trash2, Search, Check, ArrowRight, MessageSquare, Info } from 'lucide-react'
-import { API, authH, getUID, KEYS } from '../utils/auth'
+import { Calendar, Users, Clock, Phone, User, Send, CheckCircle, X, LayoutDashboard, Coffee, Utensils, Plus, Minus, Trash2, Search, Check, ArrowRight, MessageSquare, Info, AlertCircle, RefreshCw } from 'lucide-react'
+import { API, CDN, authH, getUID, KEYS, USER_KEYS, getScopedKey } from '../utils/auth'
 import socket from '../utils/socket'
 
 export default function ReservationPage({ showToast }) {
+  const uid = getUID()
   const [loading, setLoading] = useState(false)
   const [showSuccess, setShowSuccess] = useState(false)
   const [localRes, setLocalRes] = useState([])
@@ -13,9 +14,11 @@ export default function ReservationPage({ showToast }) {
   const [selectedMenus, setSelectedMenus] = useState([])
   const [loadingTables, setLoadingTables] = useState(false)
   const [menuSearch, setMenuSearch] = useState('')
-  const [activeStep, setActiveStep] = useState(1) // 1: Info, 2: Table, 3: Menu
+  const [activeStep, setActiveStep] = useState(1) // 1: Info, 2: Table, 3: Menu, 4: Payment
+  const [error, setError] = useState(null)
+  const [newlyCreatedRes, setNewlyCreatedRes] = useState(null)
 
-  const [form, setLoadingForm] = useState({
+  const [form, setForm] = useState({
     nama_tamu: '',
     nomor_wa: '',
     jumlah_orang: 2,
@@ -24,33 +27,59 @@ export default function ReservationPage({ showToast }) {
     catatan: ''
   })
 
+  const fetchUserReservations = async () => {
+    try {
+      // Senior Engineer Note: Standard 'cache: no-store' for CORS compatibility
+      const res = await fetch(`${API}/reservations`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
+      if (!res.ok) return
+      const data = await res.json()
+      if (data.success) {
+        const myUid = getUID()
+        const filtered = data.data.filter(r => String(r.id_user || r.userId) === String(myUid))
+        
+        // BUG FIX 1: Replace state entirely instead of appending/merging manually
+        // This ensures no duplication occurs when the API returns the full list
+        setLocalRes(filtered)
+        
+        // Update local cache silently
+        const localKey = getScopedKey(USER_KEYS.RESERVATIONS)
+        localStorage.setItem(localKey, JSON.stringify(filtered))
+      }
+    } catch (err) {
+      console.error('[Reservation] fetchUserReservations failed', err)
+    }
+  }
+
   useEffect(() => {
-    const saved = JSON.parse(localStorage.getItem(KEYS.RESERVATIONS) || '[]')
+    const saved = JSON.parse(localStorage.getItem(getScopedKey(USER_KEYS.RESERVATIONS)) || '[]')
     setLocalRes(saved)
     fetchMenus()
+    fetchUserReservations()
 
-    // Socket listeners
+    // Real-time Event Listeners (Event-Driven)
     socket.on('table_status_changed', () => {
-        console.log('Table status changed, refetching...');
+        console.log('[Reservation] Realtime: Table Status Change Detected')
         fetchAvailability()
     })
     socket.on('reservations_updated', () => {
-        console.log('Reservations updated, refetching...');
+        console.log('[Reservation] Realtime: Global Reservations Updated')
         fetchAvailability()
-        // Refresh local reservations to show status changes
-        const saved = JSON.parse(localStorage.getItem(KEYS.RESERVATIONS) || '[]')
-        setLocalRes(saved)
+        fetchUserReservations()
+    })
+    socket.on('update_reservation', () => {
+        console.log('[Reservation] Realtime: Reservation Status Updated')
+        fetchUserReservations()
     })
 
     return () => {
         socket.off('table_status_changed')
         socket.off('reservations_updated')
+        socket.off('update_reservation')
     }
-  }, [])
-
-  useEffect(() => {
-    console.log('Selected Table changed:', selectedTable);
-  }, [selectedTable])
+  }, [uid])
 
   useEffect(() => {
     if (form.waktu_reservasi) {
@@ -67,14 +96,12 @@ export default function ReservationPage({ showToast }) {
 
   const handleStep1Submit = (e) => {
     e.preventDefault()
-    console.log('Step 1 Submit:', form);
     if (!form.nama_tamu.trim() || !form.nomor_wa.trim() || !form.waktu_reservasi) {
       showToast('Mohon lengkapi informasi dasar & waktu', 'error')
       return
     }
     setActiveStep(2)
     setTimeout(() => scrollToSection('step-meja'), 100)
-    // Trigger fetch just in case
     fetchAvailability()
   }
 
@@ -87,45 +114,75 @@ export default function ReservationPage({ showToast }) {
     setTimeout(() => scrollToSection('step-menu'), 100)
   }
 
+  const handleSkipMenu = () => {
+    if (!selectedTable) {
+      showToast('Pilih meja terlebih dahulu', 'error')
+      return
+    }
+    setActiveStep(3)
+    setTimeout(() => {
+        const element = document.getElementById('final-submit')
+        if (element) element.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 100)
+  }
+
   const fetchMenus = async () => {
     try {
-      const res = await fetch(`${API}/menu`)
+      const res = await fetch(`${API}/menu`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
+      if (!res.ok) throw new Error('Gagal mengambil data menu')
       const data = await res.json()
-      if (data.success) setAvailableMenus(data.data)
+      if (data.success) {
+        setAvailableMenus(data.data)
+        setError(null)
+      } else {
+        throw new Error(data.message || 'Gagal mengambil data menu')
+      }
     } catch (err) {
       console.error('Fetch Menus Error:', err)
+      setError('Koneksi ke server terputus. Pastikan server backend berjalan.')
     }
   }
 
   const fetchAvailability = async () => {
     if (!form.waktu_reservasi) return;
     setLoadingTables(true)
+    setError(null)
+    const timerLabel = `[Reservation] fetchAvailability-${Date.now()}`
+    console.time(timerLabel)
     try {
       const dt = new Date(form.waktu_reservasi)
       const date = dt.toISOString().split('T')[0]
       const time = dt.toTimeString().split(' ')[0].substring(0, 5)
       
-      console.log(`Fetching availability for ${date} ${time}...`);
-      const res = await fetch(`${API}/reservations/availability?date=${date}&time=${time}&duration=${form.durasi_menit}`)
-      const data = await res.json()
-      console.log('Availability Data:', data);
+      const res = await fetch(`${API}/reservations/availability?date=${date}&time=${time}&duration=${form.durasi_menit}`, {
+        headers: authH(),
+        cache: 'no-store'
+      })
       
+      if (!res.ok) throw new Error('Gagal mengecek ketersediaan meja')
+      
+      const data = await res.json()
       if (data.success) {
         setTables(data.data)
-        // Auto-deselect if table becomes unavailable
         if (selectedTable) {
           const current = data.data.find(t => t.id === selectedTable.id);
           if (!current || !current.available) {
-              console.log('Selected table became unavailable, deselecting...');
               setSelectedTable(null);
           }
         }
+      } else {
+        throw new Error(data.message || 'Gagal mengecek ketersediaan meja')
       }
     } catch (err) {
       console.error('Fetch Availability Error:', err)
-      showToast('Gagal cek ketersediaan meja', 'error')
+      showToast(err.message, 'error')
+      setTables([])
     } finally {
       setLoadingTables(false)
+      console.timeEnd(timerLabel)
     }
   }
 
@@ -164,12 +221,13 @@ export default function ReservationPage({ showToast }) {
     }
 
     setLoading(true)
+    console.time('[Reservation] CreateReservation')
     try {
       const formattedDate = form.waktu_reservasi.replace('T', ' ') + ':00'
       
       const res = await fetch(`${API}/reservations`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authH(),
         body: JSON.stringify({ 
           ...form, 
           waktu_reservasi: formattedDate,
@@ -187,27 +245,34 @@ export default function ReservationPage({ showToast }) {
         const newRes = { 
           ...form, 
           id: data.reservationId, 
+          id_user: getUID(),
           nomor_meja: selectedTable.nomor_meja,
           status: 'pending',
+          total_bayar: totalMenuPrice,
           created_at: new Date().toISOString() 
         }
-        const updated = [newRes, ...localRes]
-        setLocalRes(updated)
-        localStorage.setItem(KEYS.RESERVATIONS, JSON.stringify(updated))
         
-        setShowSuccess(true)
-        setLoadingForm({ nama_tamu: '', nomor_wa: '', jumlah_orang: 2, waktu_reservasi: '', durasi_menit: 120, catatan: '' })
+        setNewlyCreatedRes(newRes)
+        setActiveStep(4)
+        
+        // Optimistic Sync to local state
+        setLocalRes(prev => [newRes, ...prev])
+
+        setForm({ nama_tamu: '', nomor_wa: '', jumlah_orang: 2, waktu_reservasi: '', durasi_menit: 120, catatan: '' })
         setSelectedTable(null)
         setSelectedMenus([])
-        setActiveStep(1)
+        
+        // Broadcast to Admin/Kasir
+        socket.emit('new_reservation', newRes)
       } else {
         throw new Error(data.message || 'Gagal buat reservasi')
       }
     } catch (err) {
-      console.error('Reservation Error:', err)
+      console.error('[Reservation] CreateReservation failed', err)
       showToast(err.message, 'error')
     } finally {
       setLoading(false)
+      console.timeEnd('[Reservation] CreateReservation')
     }
   }
 
@@ -239,6 +304,26 @@ export default function ReservationPage({ showToast }) {
     </div>
   )
 
+  if (error) {
+    return (
+      <div className="page bg-bg min-h-screen flex flex-col items-center justify-center p-6 text-center">
+        <div className="w-24 h-24 bg-red-100 dark:bg-red-500/10 rounded-full flex items-center justify-center text-red-500 mb-8 animate-bounceIn">
+          <AlertCircle size={48} />
+        </div>
+        <h2 className="text-3xl font-syne font-black text-gray-900 dark:text-white mb-2">Ups, Ada Masalah!</h2>
+        <p className="text-gray-500 dark:text-gray-400 mb-10 max-w-md leading-relaxed">
+          {error}
+        </p>
+        <button 
+          className="px-10 py-4 bg-or text-white font-black rounded-2xl shadow-glow-or hover:scale-105 transition-all flex items-center gap-3"
+          onClick={() => { setError(null); fetchMenus(); }}
+        >
+          <RefreshCw size={20} /> Coba Muat Ulang
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="page bg-bg min-h-screen pb-32">
       <div className="bg-white dark:bg-[#1A1A1A] px-6 py-12 md:px-12 md:py-16 transition-colors duration-300 border-b border-gray-100 dark:border-white/5">
@@ -257,9 +342,9 @@ export default function ReservationPage({ showToast }) {
         {/* STEP INDICATOR */}
         <div className="flex items-center justify-between max-w-2xl mx-auto mb-16 relative">
           <div className="absolute top-1/2 left-0 w-full h-1 bg-gray-100 dark:bg-white/5 -translate-y-1/2 z-0 rounded-full"></div>
-          <div className={`absolute top-1/2 left-0 h-1 bg-or -translate-y-1/2 z-0 transition-all duration-700 rounded-full shadow-glow-or`} style={{ width: `${(activeStep - 1) * 50}%` }}></div>
+          <div className={`absolute top-1/2 left-0 h-1 bg-or -translate-y-1/2 z-0 transition-all duration-700 rounded-full shadow-glow-or`} style={{ width: `${(activeStep - 1) * 33.33}%` }}></div>
           
-          {[1, 2, 3].map((s) => (
+          {[1, 2, 3, 4].map((s) => (
             <div key={s} className="relative z-10 flex flex-col items-center gap-3">
               <div className={`w-12 h-12 rounded-full flex items-center justify-center font-black text-sm transition-all duration-500 ${
                 activeStep === s ? 'bg-or text-white shadow-glow-or scale-125' : 
@@ -268,7 +353,7 @@ export default function ReservationPage({ showToast }) {
                 {activeStep > s ? <Check size={20} strokeWidth={3} /> : s}
               </div>
               <span className={`text-[10px] font-black uppercase tracking-widest ${activeStep >= s ? 'text-or' : 'text-gray-400'}`}>
-                {s === 1 ? 'Data Diri' : s === 2 ? 'Pilih Meja' : 'Pre-Order'}
+                {s === 1 ? 'Data Diri' : s === 2 ? 'Pilih Meja' : s === 3 ? 'Pre-Order' : 'Pembayaran'}
               </span>
             </div>
           ))}
@@ -276,7 +361,7 @@ export default function ReservationPage({ showToast }) {
 
         <form onSubmit={handleSubmit} className="space-y-10 animate-fadeUp">
           {/* STEP 1: BASIC INFO */}
-          <div id="step-info" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3rem] shadow-premium border border-gray-100 dark:border-white/5 transition-all duration-300 ${activeStep > 1 ? 'opacity-60 blur-[1px]' : ''}`}>
+          <div id="step-info" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3rem] shadow-premium border border-gray-100 dark:border-white/5 transition-all duration-300 ${activeStep === 4 ? 'hidden' : activeStep > 1 ? 'opacity-60 blur-[1px]' : ''}`}>
             <div className="flex items-center justify-between mb-10">
               <div className="flex items-center gap-4">
                 <div className="w-2 h-8 bg-or rounded-full"></div>
@@ -297,7 +382,7 @@ export default function ReservationPage({ showToast }) {
                   placeholder="John Doe"
                   className="w-full px-6 py-4 bg-gray-50 dark:bg-white/5 border-2 border-transparent focus:border-or/30 rounded-2xl outline-none transition-all text-sm font-bold dark:text-white"
                   value={form.nama_tamu}
-                  onChange={(e) => setLoadingForm({ ...form, nama_tamu: e.target.value })}
+                  onChange={(e) => setForm({ ...form, nama_tamu: e.target.value })}
                 />
               </div>
 
@@ -310,7 +395,7 @@ export default function ReservationPage({ showToast }) {
                   placeholder="081234567890"
                   className="w-full px-6 py-4 bg-gray-50 dark:bg-white/5 border-2 border-transparent focus:border-or/30 rounded-2xl outline-none transition-all text-sm font-bold dark:text-white"
                   value={form.nomor_wa}
-                  onChange={(e) => setLoadingForm({ ...form, nomor_wa: e.target.value })}
+                  onChange={(e) => setForm({ ...form, nomor_wa: e.target.value })}
                 />
               </div>
 
@@ -321,13 +406,13 @@ export default function ReservationPage({ showToast }) {
                 <div className="flex items-center gap-4 bg-gray-50 dark:bg-white/5 p-2 rounded-2xl border-2 border-transparent">
                   <button 
                     type="button"
-                    onClick={() => setLoadingForm({ ...form, jumlah_orang: Math.max(1, form.jumlah_orang - 1) })}
+                    onClick={() => setForm({ ...form, jumlah_orang: Math.max(1, form.jumlah_orang - 1) })}
                     className="w-12 h-12 bg-white dark:bg-black/20 rounded-xl shadow-sm flex items-center justify-center font-black text-or active:scale-90 transition-all"
                   ><Minus size={16}/></button>
                   <span className="flex-1 text-center font-black text-gray-800 dark:text-white text-lg">{form.jumlah_orang}</span>
                   <button 
                     type="button"
-                    onClick={() => setLoadingForm({ ...form, jumlah_orang: form.jumlah_orang + 1 })}
+                    onClick={() => setForm({ ...form, jumlah_orang: form.jumlah_orang + 1 })}
                     className="w-12 h-12 bg-white dark:bg-black/20 rounded-xl shadow-sm flex items-center justify-center font-black text-or active:scale-90 transition-all"
                   ><Plus size={16}/></button>
                 </div>
@@ -341,7 +426,7 @@ export default function ReservationPage({ showToast }) {
                   type="datetime-local"
                   className="w-full px-6 py-4 bg-gray-50 dark:bg-white/5 border-2 border-transparent focus:border-or/30 rounded-2xl outline-none transition-all text-sm font-bold dark:text-white"
                   value={form.waktu_reservasi}
-                  onChange={(e) => setLoadingForm({ ...form, waktu_reservasi: e.target.value })}
+                  onChange={(e) => setForm({ ...form, waktu_reservasi: e.target.value })}
                 />
               </div>
 
@@ -352,7 +437,7 @@ export default function ReservationPage({ showToast }) {
                 <select 
                   className="w-full px-6 py-4 bg-gray-50 dark:bg-white/5 border-2 border-transparent focus:border-or/30 rounded-2xl outline-none transition-all text-sm font-bold dark:text-white appearance-none"
                   value={form.durasi_menit}
-                  onChange={(e) => setLoadingForm({ ...form, durasi_menit: parseInt(e.target.value) })}
+                  onChange={(e) => setForm({ ...form, durasi_menit: parseInt(e.target.value) })}
                 >
                   <option value={60}>1 Jam</option>
                   <option value={120}>2 Jam (Standard)</option>
@@ -370,7 +455,7 @@ export default function ReservationPage({ showToast }) {
                   placeholder="Alergi, request khusus, dll"
                   className="w-full px-6 py-4 bg-gray-50 dark:bg-white/5 border-2 border-transparent focus:border-or/30 rounded-2xl outline-none transition-all text-sm font-bold dark:text-white"
                   value={form.catatan}
-                  onChange={(e) => setLoadingForm({ ...form, catatan: e.target.value })}
+                  onChange={(e) => setForm({ ...form, catatan: e.target.value })}
                 />
               </div>
             </div>
@@ -389,7 +474,7 @@ export default function ReservationPage({ showToast }) {
           </div>
 
           {/* STEP 2: VISUAL TABLE LAYOUT */}
-          <div id="step-meja" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3.5rem] shadow-premium border border-gray-100 dark:border-white/5 space-y-10 transition-all duration-500 ${activeStep < 2 ? 'opacity-40 blur-md pointer-events-none' : activeStep > 2 ? 'opacity-60 blur-[1px]' : 'opacity-100'}`}>
+          <div id="step-meja" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3.5rem] shadow-premium border border-gray-100 dark:border-white/5 space-y-10 transition-all duration-500 ${activeStep === 4 ? 'hidden' : activeStep < 2 ? 'opacity-40 blur-md pointer-events-none' : activeStep > 2 ? 'opacity-60 blur-[1px]' : 'opacity-100'}`}>
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="flex items-center gap-4">
                 <div className="w-2 h-8 bg-or rounded-full"></div>
@@ -517,7 +602,7 @@ export default function ReservationPage({ showToast }) {
                 </button>
                 <button 
                    type="button"
-                   onClick={() => setActiveStep(3)}
+                   onClick={handleSkipMenu}
                    disabled={!selectedTable}
                    className="px-10 py-5 bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400 font-black rounded-2xl hover:bg-gray-200 dark:hover:bg-white/10 transition-all text-xs uppercase tracking-widest disabled:opacity-50"
                 >
@@ -528,7 +613,7 @@ export default function ReservationPage({ showToast }) {
           </div>
 
           {/* STEP 3: PRE-ORDER MENU */}
-          <div id="step-menu" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3.5rem] shadow-premium border border-gray-100 dark:border-white/5 space-y-10 transition-all duration-500 ${activeStep < 3 ? 'opacity-40 blur-md pointer-events-none' : 'opacity-100'}`}>
+          <div id="step-menu" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3.5rem] shadow-premium border border-gray-100 dark:border-white/5 space-y-10 transition-all duration-500 ${activeStep === 4 ? 'hidden' : activeStep < 3 ? 'opacity-40 blur-md pointer-events-none' : 'opacity-100'}`}>
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="flex items-center gap-4">
                 <div className="w-2 h-8 bg-or rounded-full"></div>
@@ -566,7 +651,7 @@ export default function ReservationPage({ showToast }) {
                         }`}
                       >
                         <div className="w-20 h-20 rounded-2xl bg-gray-200 dark:bg-white/10 overflow-hidden shrink-0 shadow-premium">
-                          {m.foto_menu && <img src={`${API.replace('/api', '')}/uploads/${m.foto_menu}`} alt={m.nama_menu} className="w-full h-full object-cover transition-transform group-hover:scale-110" />}
+                          {m.foto_menu && <img src={`${CDN}/${m.foto_menu}`} alt={m.nama_menu} className="w-full h-full object-cover transition-transform group-hover:scale-110" />}
                         </div>
                         <div className="flex-1 min-w-0">
                           <div className="text-base font-black text-gray-900 dark:text-white truncate">{m.nama_menu}</div>
@@ -658,8 +743,64 @@ export default function ReservationPage({ showToast }) {
             </div>
           </div>
 
+          {/* STEP 4: QRIS PAYMENT */}
+          <div id="step-pembayaran" className={`bg-white dark:bg-[#1A1A1A] p-8 md:p-12 rounded-[3.5rem] shadow-premium border border-gray-100 dark:border-white/5 space-y-10 transition-all duration-500 ${activeStep < 4 ? 'hidden' : 'opacity-100'}`}>
+            <div className="flex flex-col items-center text-center max-w-2xl mx-auto">
+              <div className="w-20 h-2 bg-or rounded-full mb-8"></div>
+              <h2 className="text-3xl md:text-4xl font-syne font-black text-gray-900 dark:text-white uppercase tracking-tight mb-4">4. Selesaikan Pembayaran</h2>
+              <p className="text-gray-500 dark:text-gray-400 text-sm font-medium mb-12">
+                Silakan scan QRIS di bawah ini untuk mengonfirmasi reservasi Anda.
+              </p>
+
+              <div className="bg-white dark:bg-black/20 p-10 rounded-[3rem] border-2 border-or shadow-2xl mb-12 relative overflow-hidden group">
+                 <div className="absolute top-0 left-0 w-full h-2 bg-or"></div>
+                 <div className="w-56 h-56 bg-gray-50 dark:bg-white/5 rounded-3xl mx-auto mb-8 flex items-center justify-center text-8xl text-or/20 border-4 border-dashed border-or/30 animate-pulse">
+                    ⊞
+                 </div>
+                 <div className="text-[10px] font-black text-gray-400 uppercase tracking-[0.3em] mb-2">Total Biaya Pre-Order</div>
+                 <div className="text-4xl font-syne font-black text-or">Rp {newlyCreatedRes?.total_bayar.toLocaleString() || '0'}</div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full mb-12">
+                  <div className="p-6 bg-gray-50 dark:bg-white/5 rounded-3xl border border-gray-100 dark:border-white/10 text-left">
+                      <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">ID Reservasi</div>
+                      <div className="text-lg font-black text-gray-800 dark:text-white">#{newlyCreatedRes?.id}</div>
+                  </div>
+                  <div className="p-6 bg-gray-50 dark:bg-white/5 rounded-3xl border border-gray-100 dark:border-white/10 text-left">
+                      <div className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Meja Dipilih</div>
+                      <div className="text-lg font-black text-gray-800 dark:text-white">Meja {newlyCreatedRes?.nomor_meja}</div>
+                  </div>
+              </div>
+
+              <button 
+                type="button"
+                onClick={() => {
+                   const updated = [newlyCreatedRes, ...localRes]
+                   setLocalRes(updated)
+                   localStorage.setItem(getScopedKey(USER_KEYS.RESERVATIONS), JSON.stringify(updated))
+                   
+                   // Realtime Trigger
+                   socket.emit('new_reservation', newlyCreatedRes)
+                   console.log('Reservation Created & Payment Confirmed:', newlyCreatedRes)
+                   console.log('Bookings Count:', updated.length)
+
+                   setShowSuccess(true)
+                   setActiveStep(1)
+                   setNewlyCreatedRes(null)
+                }}
+                className="w-full py-6 bg-or text-white font-black rounded-[2rem] shadow-glow-or hover:scale-105 active:scale-95 transition-all text-sm uppercase tracking-widest flex items-center justify-center gap-4"
+              >
+                Konfirmasi Sudah Bayar <CheckCircle size={20} />
+              </button>
+              
+              <p className="mt-6 text-[10px] font-bold text-gray-400 uppercase tracking-widest flex items-center gap-2">
+                <Info size={14} className="text-or" /> Pembayaran akan diverifikasi otomatis oleh sistem
+              </p>
+            </div>
+          </div>
+
           {/* FINAL SUBMIT BUTTON */}
-          <div className="pt-10">
+          <div id="final-submit" className={`pt-10 ${activeStep === 4 ? 'hidden' : ''}`}>
             {activeStep < 3 ? (
               <div className="p-10 bg-gray-50 dark:bg-white/5 rounded-[3rem] border-2 border-dashed border-gray-100 dark:border-white/10 text-center">
                 <p className="text-xs font-black text-gray-400 uppercase tracking-[0.3em]">Selesaikan langkah sebelumnya untuk konfirmasi reservasi</p>
@@ -686,13 +827,13 @@ export default function ReservationPage({ showToast }) {
             )}
             <div className="mt-6 flex items-center justify-center gap-6 opacity-40">
                 <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-gray-400">
-                    <CheckCircle2 size={12} className="text-green-500" /> Realtime Check
+                    <CheckCircle size={12} className="text-green-500" /> Realtime Check
                 </div>
                 <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-gray-400">
-                    <CheckCircle2 size={12} className="text-green-500" /> Secure Payment
+                    <CheckCircle size={12} className="text-green-500" /> Secure Payment
                 </div>
                 <div className="flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-gray-400">
-                    <CheckCircle2 size={12} className="text-green-500" /> 24/7 Support
+                    <CheckCircle size={12} className="text-green-500" /> 24/7 Support
                 </div>
             </div>
           </div>

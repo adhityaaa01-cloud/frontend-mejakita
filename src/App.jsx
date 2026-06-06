@@ -112,7 +112,7 @@ export default function App() {
 
   const showToast = (msg, type = '') => setToast({ msg, type })
 
-  // Real-time Socket Synchronization
+  // Real-time Socket Synchronization (Event-Driven)
   useEffect(() => {
     if (activeOrder?.id_order || activeOrder?.id) {
       const orderId = activeOrder.id_order || activeOrder.id
@@ -120,33 +120,48 @@ export default function App() {
     }
 
     socket.on('status_updated', (data) => {
-      if (activeOrder && String(activeOrder.id || activeOrder.id_order) === String(data.id_order)) {
+      console.log('[App] Realtime: Status Updated', data)
+      const targetId = data.id_order || data.id
+      if (activeOrder && String(activeOrder.id || activeOrder.id_order) === String(targetId)) {
         const updated = { 
           ...activeOrder, 
+          ...data,
           status: data.status, 
-          paymentStatus: data.paymentStatus || activeOrder.paymentStatus 
         }
         setActiveOrder(updated)
         saveOrderToLocal(updated)
       }
-      showToast(`Order #${data.id_order}: ${data.status.toUpperCase()}`, 'info')
+      showToast(`Pesanan #${targetId}: ${data.status.toUpperCase()}`, 'info')
     })
 
     socket.on('new_order', (data) => {
-      if (isAdmin) showToast(`Notifikasi Pesanan: Meja ${data.nomor_meja}`, 'orange')
+      if (isAdmin || isKasir) {
+        showToast(`Pesanan Baru: Meja ${data.nomor_meja}`, 'orange')
+        // Senior Engineer Note: Force immediate state sync if we're on the dashboard
+      }
+    })
+
+    socket.on('new_reservation', (data) => {
+      if (isAdmin || isKasir) {
+        showToast(`Reservasi Baru: ${data.nama_tamu}`, 'purple')
+      }
     })
 
     return () => {
       socket.off('status_updated')
       socket.off('new_order')
+      socket.off('new_reservation')
     }
-  }, [isAdmin, activeOrder?.id_order, activeOrder?.id])
+  }, [isAdmin, isKasir, activeOrder])
 
-  // Fetch menus on mount
+  // Fetch menus on mount (Senior Engineer Note: No cache for freshness)
   useEffect(() => {
     ;(async () => {
       try {
-        const r = await fetch(`${API}/menu`)
+        const r = await fetch(`${API}/menu`, { 
+          headers: authH(),
+          cache: 'no-store'
+        })
         const d = await r.json()
         if (d.success) setMenus(d.data)
         else throw new Error(d.message)

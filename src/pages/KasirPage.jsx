@@ -1,30 +1,36 @@
 import { useState, useEffect, useCallback } from 'react'
 import socket from '../utils/socket'
-import { API, authH, fmt, fmtDate, KEYS, saveOrderToLocal, COMPLETED_STATUS } from '../utils/auth'
-import { Package, CheckCircle, Clock, Search, Filter, DollarSign, ArrowRight, Calendar, Users, X, ClipboardList } from 'lucide-react'
+import { API, authH, fmt, fmtDate, KEYS, saveOrderToLocal, COMPLETED_STATUS, USER_KEYS, getScopedKey } from '../utils/auth'
+import { Package, CheckCircle, Clock, Search, Filter, DollarSign, ArrowRight, Calendar, Users, X, ClipboardList, AlertTriangle } from 'lucide-react'
 
 export default function KasirPage({ showToast, activeOrder, setActiveOrder }) {
   const [orders, setOrders] = useState([])
-  const [reservations, setReservations] = useState([])
+  const [reservations, setReservations] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('kasir_reservations_cache') || '[]') } catch(e) { return [] }
+  })
   const [tab, setTab] = useState('orders') // orders | reservations
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState('semua') 
   const [search, setSearch] = useState('')
 
+  const [confirmModal, setConfirmModal] = useState({ show: false, title: '', desc: '', onConfirm: null, type: 'info' })
+
   const fetchOrders = useCallback(async () => {
     setLoading(true)
     let fetchedOrders = []
     
-    // 1. Try fetching from API
     try {
-      const res = await fetch(`${API}/orders`, { headers: authH() })
+      // Senior Engineer Note: Standard 'cache: no-store' to ensure freshness without CORS preflight custom header issues.
+      const res = await fetch(`${API}/orders`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const data = await res.json()
       if (data.success) fetchedOrders = data.data
     } catch (err) {
-      console.warn('Backend offline, using local simulation for Kasir Dashboard')
+      console.warn('[Kasir] Backend unreachable, using local fallback')
     }
 
-    // 2. Merge with Master Orders from LocalStorage (Aggregate all users)
     try {
       let masterOrders = []
       Object.keys(localStorage).forEach(key => {
@@ -37,7 +43,6 @@ export default function KasirPage({ showToast, activeOrder, setActiveOrder }) {
       masterOrders.forEach(mo => {
         const orderId = mo.id_order || mo.id
         const existsIdx = fetchedOrders.findIndex(o => String(o.id) === String(orderId))
-        const isComp = COMPLETED_STATUS.includes((mo.status || '').toLowerCase())
         
         const mapped = {
           id: orderId,
@@ -53,38 +58,65 @@ export default function KasirPage({ showToast, activeOrder, setActiveOrder }) {
         if (existsIdx < 0) {
           fetchedOrders.unshift(mapped)
         } else {
-          // Sync status from local if local is more "advanced" (for simulation)
           const localStatus = (mo.status || '').toLowerCase()
           const advancedStatuses = ['waiting_cash_confirmation', 'menunggu konfirmasi kasir', 'diproses', 'dibatalkan', 'cancelled', ...COMPLETED_STATUS]
-          
           if (advancedStatuses.includes(localStatus)) {
             fetchedOrders[existsIdx] = { ...fetchedOrders[existsIdx], ...mapped }
           }
         }
       })
-    } catch (e) {
-      console.error('Failed to parse master orders', e)
-    }
+    } catch (e) {}
 
     setOrders(fetchedOrders)
     setLoading(false)
-  }, [showToast])
+  }, [])
 
   const fetchReservations = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/reservations`, { headers: authH() })
+      const res = await fetch(`${API}/reservations`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const data = await res.json()
-      if (data.success) setReservations(data.data)
-    } catch (err) {}
+      if (data.success) {
+        const sorted = data.data.sort((a, b) => (b.id || 0) - (a.id || 0))
+        setReservations(sorted)
+        localStorage.setItem('kasir_reservations_cache', JSON.stringify(sorted))
+      }
+    } catch (e) {
+      console.error('[Kasir] fetchReservations failed', e)
+    }
   }, [])
 
   useEffect(() => {
     fetchOrders()
     fetchReservations()
-    socket.on('new_order', () => fetchOrders())
-    socket.on('refresh_kds', () => fetchOrders())
-    socket.on('new_reservation', () => fetchReservations())
-    socket.on('update_reservation', () => fetchReservations())
+
+    // Real-time Event Listeners
+    socket.on('new_order', () => {
+        console.log('[Kasir] Realtime: New Order Detected')
+        fetchOrders()
+    })
+    socket.on('refresh_kds', () => {
+        console.log('[Kasir] Realtime: KDS Refresh Triggered')
+        fetchOrders()
+    })
+    socket.on('status_updated', () => {
+        console.log('[Kasir] Realtime: Order Status Updated')
+        fetchOrders()
+    })
+    socket.on('new_reservation', () => {
+        console.log('[Kasir] Realtime: New Reservation Detected')
+        fetchReservations()
+    })
+    socket.on('update_reservation', () => {
+        console.log('[Kasir] Realtime: Reservation Updated')
+        fetchReservations()
+    })
+    socket.on('reservations_updated', () => {
+        console.log('[Kasir] Realtime: Global Reservations Refresh')
+        fetchReservations()
+    })
     
     const handleStorage = () => fetchOrders()
     window.addEventListener('storage', handleStorage)
@@ -92,102 +124,112 @@ export default function KasirPage({ showToast, activeOrder, setActiveOrder }) {
     return () => {
       socket.off('new_order')
       socket.off('refresh_kds')
+      socket.off('status_updated')
       socket.off('new_reservation')
       socket.off('update_reservation')
+      socket.off('reservations_updated')
       window.removeEventListener('storage', handleStorage)
     }
   }, [fetchOrders, fetchReservations])
 
+  const confirmAction = (title, desc, onConfirm, type = 'info') => {
+    setConfirmModal({ show: true, title, desc, onConfirm, type })
+  }
+
   const updateStatus = async (id, newStatus, extraData = {}) => {
-    // 1. Get current order data from state
-    const orderToUpdate = orders.find(o => String(o.id) === String(id))
-    if (!orderToUpdate) return
+    const isCancel = newStatus === 'dibatalkan' || newStatus === 'cancelled'
+    const actionLabel = isCancel ? 'Batalkan' : 'Update'
 
-    const updatedOrder = { ...orderToUpdate, status: newStatus, ...extraData }
+    confirmAction(
+      `${actionLabel} Pesanan?`,
+      isCancel ? 'Pesanan ini akan dibatalkan secara permanen.' : `Update status pesanan menjadi ${newStatus}.`,
+      async () => {
+        const previousOrders = [...orders]
+        const orderToUpdate = orders.find(o => String(o.id) === String(id))
+        if (!orderToUpdate) return
 
-    // 2. Local State Update for Immediate Feedback
-    setOrders(prev => prev.map(o => String(o.id) === String(id) ? updatedOrder : o))
+        const updatedOrder = { ...orderToUpdate, status: newStatus, ...extraData }
 
-    // 3. Persistence Update
-    saveOrderToLocal(updatedOrder)
-    
-    // 4. Also clean up any other user-specific storage keys (redundancy)
-    try {
-      Object.keys(localStorage).forEach(key => {
-        if (key.startsWith('mejakita_orders_')) {
-          const items = JSON.parse(localStorage.getItem(key) || '[]')
-          const idx = items.findIndex(o => String(o.id || o.id_order) === String(id))
-          if (idx >= 0) {
-             items[idx] = { ...items[idx], status: newStatus, ...extraData }
-             localStorage.setItem(key, JSON.stringify(items))
+        // Optimistic UI
+        setOrders(prev => prev.map(o => String(o.id) === String(id) ? updatedOrder : o))
+        saveOrderToLocal(updatedOrder)
+
+        try {
+          console.time(`[Kasir] updateStatus #${id}`)
+          const res = await fetch(`${API}/orders/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...authH() },
+            body: JSON.stringify({ status: newStatus, ...extraData })
+          })
+          const data = await res.json()
+          if (data.success) {
+            showToast(`Pesanan #${id} diupdate`, 'success')
+            socket.emit('status_updated', { id, status: newStatus, ...extraData })
+          } else {
+            throw new Error(data.message)
           }
+        } catch (err) {
+          console.error('[Kasir] updateStatus failed, rolling back', err)
+          setOrders(previousOrders)
+          showToast(`Gagal: ${err.message}`, 'error')
+        } finally {
+          console.timeEnd(`[Kasir] updateStatus #${id}`)
+          fetchOrders()
         }
-      })
-    } catch (e) {}
-
-    // 5. Sync with Active User if it's their order
-    if (activeOrder && (String(activeOrder.id_order) === String(id) || String(activeOrder.id) === String(id))) {
-      setActiveOrder(prev => ({ ...prev, status: newStatus, ...extraData }))
-    }
-
-    // 6. API Sync (Optional/Background)
-    try {
-      const res = await fetch(`${API}/orders/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authH() },
-        body: JSON.stringify({ status: newStatus, ...extraData })
-      })
-      const data = await res.json()
-      if (data.success) {
-        showToast(`Pesanan #${id} diupdate ke ${newStatus}`, 'success')
-      }
-    } catch (err) {
-      console.warn('API Sync failed, but local update was successful')
-      showToast(`Pesanan #${id} diupdate secara lokal`, 'info')
-    }
-    
-    // Refresh list to apply filters correctly
-    fetchOrders()
+      },
+      isCancel ? 'danger' : 'success'
+    )
   }
 
   const updateReservationStatus = async (id, newStatus) => {
-    const action = newStatus === 'confirmed' ? 'mengonfirmasi' : 'membatalkan'
-    if (!window.confirm(`Yakin ingin ${action} reservasi ini?`)) return
-    
-    setLoading(true)
-    try {
-      // 1. Update backend
-      const res = await fetch(`${API}/reservations/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', ...authH() },
-        body: JSON.stringify({ status: newStatus })
-      })
-      const data = await res.json()
-      
-      if (data.success) {
-        showToast(`Reservasi berhasil diupdate ke ${newStatus}`, 'success')
+    const isCancel = newStatus === 'cancelled' || newStatus === 'canceled'
+    const actionLabel = isCancel ? 'Batalkan' : 'Konfirmasi'
+
+    confirmAction(
+      `${actionLabel} Reservasi?`,
+      isCancel ? 'Reservasi ini akan dibatalkan secara permanen.' : 'Status meja akan diperbarui menjadi terisi.',
+      async () => {
+        const previousReservations = [...reservations]
         
-        // 2. Update local state
+        // Optimistic UI
         setReservations(prev => prev.map(r => String(r.id) === String(id) ? { ...r, status: newStatus } : r))
 
-        // 3. Sync localStorage (for simulation/redundancy)
+        setLoading(true)
         try {
-          const saved = JSON.parse(localStorage.getItem(KEYS.RESERVATIONS) || '[]')
-          const updated = saved.map(r => String(r.id) === String(id) ? { ...r, status: newStatus } : r)
-          localStorage.setItem(KEYS.RESERVATIONS, JSON.stringify(updated))
-          window.dispatchEvent(new Event('storage'))
-        } catch (e) {}
-      } else {
-        showToast(data.message || 'Gagal update reservasi', 'error')
-      }
-    } catch (err) {
-      console.error('Update Reservation Error:', err)
-      showToast('Gagal update status reservasi', 'error')
-    } finally {
-      setLoading(false)
-      fetchReservations() // Refresh data from API
-    }
+          console.time(`[Kasir] updateReservation #${id}`)
+          const res = await fetch(`${API}/reservations/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...authH() },
+            body: JSON.stringify({ status: newStatus })
+          })
+          const data = await res.json()
+          
+          if (data.success) {
+            showToast(`Reservasi berhasil diupdate`, 'success')
+            socket.emit('update_reservation', { id, status: newStatus })
+            socket.emit('reservations_updated')
+          } else {
+            throw new Error(data.message)
+          }
+        } catch (err) {
+          console.error('[Kasir] updateReservation failed, rolling back', err)
+          setReservations(previousReservations)
+          showToast(`Gagal: ${err.message}`, 'error')
+        } finally {
+          setLoading(false)
+          console.timeEnd(`[Kasir] updateReservation #${id}`)
+          fetchReservations()
+        }
+      },
+      isCancel ? 'danger' : 'success'
+    )
   }
+
+  useEffect(() => {
+    if (tab === 'reservations') {
+      fetchReservations()
+    }
+  }, [tab, fetchReservations])
 
   const filteredOrders = orders.filter(o => {
     const matchesFilter = filter === 'semua' || o.status === filter
@@ -375,7 +417,7 @@ export default function KasirPage({ showToast, activeOrder, setActiveOrder }) {
       </>
     ) : (
         <div className="max-w-[1400px] mx-auto px-6 py-12">
-           <div className="bg-white dark:bg-[#1A1A1A] rounded-[3rem] shadow-sm border border-gray-100 dark:border-white/5 overflow-hidden animate-fadeUp">
+           <div className="bg-white dark:bg-[#1A1A1A] rounded-[3rem] shadow-sm border border-gray-100 dark:border-white/5 overflow-hidden">
             <div className="p-10 border-b border-gray-100 dark:border-white/5 flex justify-between items-center">
                <h3 className="text-2xl font-syne font-black text-gray-900 dark:text-white">Upcoming Bookings</h3>
                <span className="px-4 py-2 bg-or/10 text-or rounded-2xl text-xs font-black">{reservations.length} Active</span>
@@ -441,6 +483,41 @@ export default function KasirPage({ showToast, activeOrder, setActiveOrder }) {
                   )}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* CUSTOM CONFIRMATION MODAL */}
+      {confirmModal.show && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-[#1A1A1A] w-full max-w-sm rounded-[2.5rem] p-10 shadow-2xl relative animate-bounceIn border border-white/10 text-center">
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${
+              confirmModal.type === 'danger' ? 'bg-red-50 text-red-500' : 'bg-green-50 text-green-500'
+            }`}>
+              {confirmModal.type === 'danger' ? <AlertTriangle size={40} /> : <CheckCircle size={40} />}
+            </div>
+            
+            <h3 className="text-2xl font-syne font-black text-gray-900 dark:text-white mb-2">{confirmModal.title}</h3>
+            <p className="text-gray-500 text-sm mb-8 font-medium leading-relaxed">{confirmModal.desc}</p>
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setConfirmModal({ ...confirmModal, show: false })}
+                className="flex-1 py-4 bg-gray-50 dark:bg-white/5 text-gray-400 font-black rounded-2xl hover:bg-gray-100 transition-all text-xs uppercase tracking-widest"
+              >
+                Batal
+              </button>
+              <button 
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal({ ...confirmModal, show: false });
+                }}
+                className={`flex-1 py-4 text-white font-black rounded-2xl shadow-lg transition-all text-xs uppercase tracking-widest ${
+                  confirmModal.type === 'danger' ? 'bg-red-500 shadow-red-500/20' : 'bg-green-500 shadow-green-500/20'
+                }`}
+              >
+                Yakin
+              </button>
             </div>
           </div>
         </div>

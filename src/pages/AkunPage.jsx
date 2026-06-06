@@ -26,7 +26,10 @@ export default function AkunPage({ setPage, showToast, onLogout }) {
       ;(async () => {
         setLoading(true)
         try {
-          const res = await fetch(`${API}/orders/user/${user.uid}`, { headers: authH() })
+          const res = await fetch(`${API}/orders/user/${user.uid}`, { 
+            headers: authH(),
+            cache: 'no-store'
+          })
           const data = await res.json()
           if (data.success) {
             setHistory(prev => {

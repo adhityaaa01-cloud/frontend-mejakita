@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Loader from '../components/Loader'
 import socket from '../utils/socket'
-import { API, CDN, PHS, fmt, fmtDate, authH, getToken, getRole, COMPLETED_STATUS, KEYS } from '../utils/auth'
+import { API, CDN, PHS, fmt, fmtDate, authH, getToken, getRole, COMPLETED_STATUS, KEYS, USER_KEYS, getScopedKey } from '../utils/auth'
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, AreaChart, Area, Cell, PieChart, Pie
@@ -10,24 +10,29 @@ import { jsPDF } from "jspdf"
 import autoTable from 'jspdf-autotable'
 import { 
   TrendingUp, Users, DollarSign, Package, Calendar, Star, 
-  FileText, Download, Filter, RefreshCw, LayoutDashboard, Utensils, Trash2, MessageSquare, X, CheckCircle, CupSoda
+  FileText, Download, Filter, RefreshCw, LayoutDashboard, Utensils, Trash2, MessageSquare, X, CheckCircle, CupSoda, AlertTriangle
 } from 'lucide-react'
 
 export default function AdminPage({ setPage, showToast, activeOrder, setActiveOrder }) {
   const [tab,           setTab]           = useState('dashboard')
   const [stats,         setStats]         = useState(null)
   const [orders,        setOrders]        = useState([])
-  const [reservations,  setReservations]  = useState([])
+  const [reservations,  setReservations]  = useState(() => {
+    try { return JSON.parse(localStorage.getItem('admin_reservations_cache') || '[]') } catch(e) { return [] }
+  })
   const [reviews,       setReviews]       = useState([])
   const [menus,         setMenus]         = useState([])
   const [loading,       setLoading]       = useState(false)
   const [dateFilter,    setDateFilter]    = useState({ start: '', end: '' })
   
-  // MENU CRUD STATES
+  // MENU CRUD & MODAL STATES
   const [showMenuModal, setShowMenuModal] = useState(false)
   const [editingMenu,   setEditingMenu]   = useState(null)
   const [menuForm,      setMenuForm]      = useState({ nama_menu: '', kategori: 'makanan', harga_modal: '', harga_jual: '', is_available: 1 })
   const [menuFile,      setMenuFile]      = useState(null)
+
+  // CUSTOM CONFIRMATION MODAL
+  const [confirmModal, setConfirmModal] = useState({ show: false, title: '', desc: '', onConfirm: null, type: 'info' })
 
   const role = getRole()
 
@@ -51,7 +56,7 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
     { id: 'dashboard', l: 'Analytics', ico: LayoutDashboard, roles: ['admin', 'kasir', 'dapur'] },
     { id: 'orders', l: 'Live Orders', ico: Package, roles: ['admin', 'dapur', 'kasir'] },
     { id: 'menus_admin', l: 'Manage Menu', ico: Utensils, roles: ['admin', 'dapur', 'kasir'] },
-    { id: 'reservations', l: 'Bookings', ico: Calendar, roles: ['admin', 'kasir'] },
+    { id: 'reservations', l: 'Bookings', ico: Calendar, roles: ['admin', 'kasir', 'dapur'] },
     { id: 'reviews_admin', l: 'Reviews', ico: MessageSquare, roles: ['admin'] },
     { id: 'reports', l: 'Reports', ico: TrendingUp, roles: ['admin', 'kasir', 'dapur'] }
   ].filter(t => t.roles.includes(role))
@@ -63,27 +68,38 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
   // Dashboard Fetcher
   const fetchDashboard = useCallback(async () => {
     setLoading(true)
+    console.time('[Admin] fetchDashboard')
     try {
       const q = dateFilter.start && dateFilter.end ? `?start_date=${dateFilter.start}&end_date=${dateFilter.end}` : ''
-      const r = await fetch(`${API}/dashboard${q}`, { headers: authH() })
+      const r = await fetch(`${API}/dashboard${q}`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const d = await r.json()
       if (d.success) setStats(d.data)
     } catch (e) {
       showToast('Gagal memuat statistik', 'error')
     } finally {
       setLoading(false)
+      console.timeEnd('[Admin] fetchDashboard')
     }
   }, [dateFilter, showToast])
 
   const fetchOrders = useCallback(async () => {
     let fetchedOrders = []
     try {
-      const r = await fetch(`${API}/orders`, { headers: authH() })
+      // Senior Engineer Note: Standard 'cache: no-store' instead of manual header to avoid CORS preflight issues.
+      const r = await fetch(`${API}/orders`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const d = await r.json()
       if (d.success) fetchedOrders = d.data
-    } catch (e) {}
+    } catch (e) {
+      console.error('[Admin] API fetchOrders failed', e)
+    }
 
-    // 2. Merge with Master Orders from LocalStorage (Aggregate all users)
+    // Merge with Local (Simulation support)
     try {
       let masterOrders = []
       Object.keys(localStorage).forEach(key => {
@@ -124,18 +140,29 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
   }, [])
 
   const fetchReservations = useCallback(async () => {
-    if (role === 'dapur') return
     try {
-      const r = await fetch(`${API}/reservations`, { headers: authH() })
+      const r = await fetch(`${API}/reservations`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const d = await r.json()
-      if (d.success) setReservations(d.data)
-    } catch (e) {}
-  }, [role])
+      if (d.success) {
+        const sorted = d.data.sort((a, b) => (b.id || 0) - (a.id || 0))
+        setReservations(sorted)
+        localStorage.setItem('admin_reservations_cache', JSON.stringify(sorted))
+      }
+    } catch (e) {
+      console.error('[Admin] fetchReservations failed', e)
+    }
+  }, [])
 
   const fetchReviews = useCallback(async () => {
     if (role !== 'admin') return
     try {
-      const r = await fetch(`${API}/reviews`, { headers: authH() })
+      const r = await fetch(`${API}/reviews`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const d = await r.json()
       if (d.success) setReviews(d.data)
     } catch (e) {}
@@ -143,7 +170,10 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
 
   const fetchMenus = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/menu`, { headers: authH() })
+      const r = await fetch(`${API}/menu`, { 
+        headers: authH(),
+        cache: 'no-store'
+      })
       const d = await r.json()
       if (d.success) setMenus(d.data)
     } catch (e) {}
@@ -167,7 +197,7 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
     try {
       const res = await fetch(url, {
         method,
-        headers: { ...authH() }, // Don't set Content-Type, fetch will set it for FormData
+        headers: { ...authH() }, 
         body: formData
       })
       const data = await res.json()
@@ -189,17 +219,25 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
   }
 
   const deleteMenu = async (id) => {
-    if (!window.confirm('Hapus menu ini secara permanen?')) return
-    try {
-      const res = await fetch(`${API}/menu/${id}`, { method: 'DELETE', headers: authH() })
-      const data = await res.json()
-      if (data.success) {
-        showToast('Menu dihapus', 'success')
-        fetchMenus()
-      }
-    } catch (e) {
-      showToast('Gagal menghapus menu', 'error')
-    }
+    confirmAction(
+      'Hapus Menu?',
+      'Menu ini akan dihapus secara permanen dari katalog.',
+      async () => {
+        try {
+          const res = await fetch(`${API}/menu/${id}`, { method: 'DELETE', headers: authH() })
+          const data = await res.json()
+          if (data.success) {
+            showToast('Menu berhasil dihapus', 'success')
+            fetchMenus()
+          } else {
+            throw new Error(data.message)
+          }
+        } catch (e) {
+          showToast('Gagal menghapus menu', 'error')
+        }
+      },
+      'danger'
+    )
   }
 
   const openEditMenu = (m) => {
@@ -215,7 +253,6 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
   }
 
   const toggleMenuAvailability = async (id, currentStatus) => {
-    // Robust check for boolean-like values (1/0, true/false)
     const newStatus = (currentStatus === 1 || currentStatus === true) ? 0 : 1
     try {
       const res = await fetch(`${API}/menu/${id}`, {
@@ -234,40 +271,21 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
   }
 
   const updateStatus = async (id, newStatus, extraData = {}) => {
-    // 1. Get current order data from state
+    // 1. Snapshot for rollback
+    const previousOrders = [...orders]
+    
     const orderToUpdate = orders.find(o => String(o.id) === String(id))
     if (!orderToUpdate) return
 
     const updatedOrder = { ...orderToUpdate, status: newStatus, ...extraData }
 
-    // 2. Local State Update for Immediate Feedback
+    // 2. Optimistic Update
     setOrders(prev => prev.map(o => String(o.id) === String(id) ? updatedOrder : o))
-
-    // 3. Persistence Update
     saveOrderToLocal(updatedOrder)
-    
-    // 4. Redundancy check for other user keys
+
+    // 3. Backend Sync
     try {
-      Object.keys(localStorage).forEach(key => {
-        if (key.startsWith('mejakita_orders_')) {
-          const items = JSON.parse(localStorage.getItem(key) || '[]')
-          const idx = items.findIndex(o => String(o.id || o.id_order) === String(id))
-          if (idx >= 0) {
-             items[idx] = { ...items[idx], status: newStatus, ...extraData }
-             localStorage.setItem(key, JSON.stringify(items))
-          }
-        }
-      })
-    } catch (e) {}
-
-    // 5. Sync with Active User if it's their order
-    if (activeOrder && (String(activeOrder.id_order) === String(id) || String(activeOrder.id) === String(id))) {
-      setActiveOrder(prev => ({ ...prev, status: newStatus, ...extraData }))
-    }
-
-    // 6. API Sync (Optional/Background)
-
-    try {
+      console.time(`[Admin] UpdateStatus #${id}`)
       const res = await fetch(`${API}/orders/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json', ...authH() },
@@ -276,53 +294,118 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
       const data = await res.json()
       if (data.success) {
         showToast(`Pesanan #${id} diupdate ke ${newStatus}`, 'success')
+        // Realtime Broadcast
+        socket.emit('status_updated', { id, status: newStatus, ...extraData })
+      } else {
+        throw new Error(data.message)
       }
     } catch (err) {
-      console.warn('API Sync failed, but local update was successful')
-      showToast(`Pesanan #${id} diupdate secara lokal`, 'info')
+      console.error('[Admin] UpdateStatus failed, rolling back...', err)
+      setOrders(previousOrders)
+      showToast(`Gagal update status: ${err.message}`, 'error')
+    } finally {
+      console.timeEnd(`[Admin] UpdateStatus #${id}`)
+      fetchOrders()
     }
-    
-    // Refresh list to apply filters correctly
-    fetchOrders()
   }
 
-  const cancelReservation = (id) => {
-    if (!window.confirm('Batalkan reservasi ini?')) return
-    try {
-      const saved = JSON.parse(localStorage.getItem(KEYS.RESERVATIONS) || '[]')
-      const updated = saved.map(r => String(r.id) === String(id) ? { ...r, status: 'cancelled' } : r)
-      localStorage.setItem(KEYS.RESERVATIONS, JSON.stringify(updated))
-      window.dispatchEvent(new Event('storage'))
-    } catch (e) {}
-
-    fetch(`${API}/reservations/${id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...authH() },
-      body: JSON.stringify({ status: 'cancelled' })
-    }).then(() => {
-      fetchReservations()
-      showToast('Reservasi dibatalkan', 'info')
-    }).catch(() => {
-      fetchReservations()
-      showToast('Reservasi dibatalkan (Local)', 'info')
-    })
+  const updateReservationStatus = async (id, status) => {
+    const isCancel = status === 'cancelled' || status === 'canceled'
+    
+    confirmAction(
+      isCancel ? 'Batalkan Reservasi?' : 'Konfirmasi Reservasi?',
+      isCancel ? 'Reservasi ini akan dibatalkan dan tidak dapat dikembalikan.' : 'Meja akan ditandai sebagai terisi untuk reservasi ini.',
+      async () => {
+        setLoading(true)
+        try {
+          const res = await fetch(`${API}/reservations/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', ...authH() },
+            body: JSON.stringify({ status })
+          })
+          const data = await res.json()
+          
+          if (data.success) {
+            // BUG FIX 2: Update state ONLY after successful 200 OK from backend
+            setReservations(prev => prev.map(r => String(r.id) === String(id) ? { ...r, status } : r))
+            
+            showToast(`Reservasi berhasil ${isCancel ? 'dibatalkan' : 'dikonfirmasi'}`, 'success')
+            socket.emit('update_reservation', { id, status })
+            socket.emit('reservations_updated')
+          } else {
+            // If backend throws error (e.g. "Gagal Status tidak valid!"), 
+            // the state remains "CONFIRMED" because we didn't change it optimistically.
+            throw new Error(data.message)
+          }
+        } catch (err) {
+          console.error('[Admin] UpdateReservation failed', err)
+          showToast(`Gagal: ${err.message}`, 'error')
+        } finally {
+          setLoading(false)
+          fetchReservations()
+        }
+      },
+      isCancel ? 'danger' : 'success'
+    )
   }
 
   useEffect(() => {
+    if (tab === 'reservations') {
+      fetchReservations()
+    }
+  }, [tab, fetchReservations])
+
+  const cancelReservation = (id) => updateReservationStatus(id, 'canceled')
+
+  useEffect(() => {
+    // Immediate Initial Fetch
     fetchDashboard()
     fetchOrders()
     fetchReservations()
     fetchReviews()
     fetchMenus()
 
+    // Real-time Event Listeners (Event-Driven, No Polling)
+    socket.on('new_reservation', () => {
+        console.log('[Admin] Realtime: New Reservation Detected')
+        fetchReservations()
+    })
+    socket.on('update_reservation', () => {
+        console.log('[Admin] Realtime: Reservation Update Detected')
+        fetchReservations()
+    })
+    socket.on('reservations_updated', () => {
+        console.log('[Admin] Realtime: Global Reservations Update Detected')
+        fetchReservations()
+    })
+    socket.on('new_order', () => {
+        console.log('[Admin] Realtime: New Order Detected')
+        fetchOrders()
+    })
+    socket.on('status_updated', () => {
+        console.log('[Admin] Realtime: Order Status Update Detected')
+        fetchOrders()
+    })
+    socket.on('refresh_kds', () => {
+        console.log('[Admin] Realtime: KDS Refresh Requested')
+        fetchOrders()
+    })
+
     const handleStorage = () => {
       fetchOrders()
       fetchReservations()
-      fetchReviews()
-      fetchMenus()
     }
     window.addEventListener('storage', handleStorage)
-    return () => window.removeEventListener('storage', handleStorage)
+    
+    return () => {
+      socket.off('new_reservation')
+      socket.off('update_reservation')
+      socket.off('reservations_updated')
+      socket.off('new_order')
+      socket.off('status_updated')
+      socket.off('refresh_kds')
+      window.removeEventListener('storage', handleStorage)
+    }
   }, [fetchDashboard, fetchOrders, fetchReservations, fetchReviews, fetchMenus])
 
   // PDF Export Logic
@@ -362,23 +445,33 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
     showToast('Report berhasil diunduh', 'success')
   }
 
+  const confirmAction = (title, desc, onConfirm, type = 'info') => {
+    setConfirmModal({ show: true, title, desc, onConfirm, type })
+  }
+
   const deleteReview = async (id) => {
-    if (!window.confirm('Hapus ulasan ini?')) return
-    try {
-      const res = await fetch(`${API}/reviews/${id}`, {
-        method: 'DELETE',
-        headers: authH()
-      })
-      const data = await res.json()
-      if (data.success) {
-        showToast('Ulasan berhasil dihapus', 'success')
-        fetchReviews()
-      } else {
-        throw new Error(data.message)
-      }
-    } catch (e) {
-      showToast('Gagal menghapus ulasan', 'error')
-    }
+    confirmAction(
+      'Hapus Ulasan?',
+      'Ulasan ini akan dihapus secara permanen dari sistem.',
+      async () => {
+        try {
+          const res = await fetch(`${API}/reviews/${id}`, {
+            method: 'DELETE',
+            headers: authH()
+          })
+          const data = await res.json()
+          if (data.success) {
+            showToast('Ulasan berhasil dihapus', 'success')
+            fetchReviews()
+          } else {
+            throw new Error(data.message)
+          }
+        } catch (e) {
+          showToast('Gagal menghapus ulasan', 'error')
+        }
+      },
+      'danger'
+    )
   }
 
   const StatCard = ({ title, value, icon: Icon, color, sub }) => (
@@ -782,7 +875,7 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
 
         {/* Reservations TAB */}
         {tab === 'reservations' && (
-          <div className="bg-white dark:bg-[#1A1A1A] rounded-[3rem] shadow-sm border border-gray-100 dark:border-white/5 overflow-hidden animate-fadeUp">
+          <div className="bg-white dark:bg-[#1A1A1A] rounded-[3rem] shadow-sm border border-gray-100 dark:border-white/5 overflow-hidden">
             <div className="p-10 border-b border-gray-100 dark:border-white/5 flex justify-between items-center">
                <h3 className="text-2xl font-syne font-black text-gray-900 dark:text-white">Upcoming Bookings</h3>
                <span className="px-4 py-2 bg-purple-500/10 text-purple-500 rounded-2xl text-xs font-black">{reservations.length} Active</span>
@@ -793,29 +886,45 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
                   <tr className="text-[10px] font-black text-gray-400 uppercase tracking-widest border-b border-gray-50 dark:border-white/5">
                     <th className="px-10 py-6">Customer</th>
                     <th className="px-10 py-6">WhatsApp</th>
+                    <th className="px-10 py-6 text-center">Table</th>
                     <th className="px-10 py-6 text-center">Pax</th>
                     <th className="px-10 py-6">Scheduled</th>
                     <th className="px-10 py-6 text-right">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50 dark:divide-white/5">
-                  {reservations.map(res => (
+                  {reservations.length === 0 ? (
+                    <tr><td colSpan="6" className="px-10 py-20 text-center text-gray-400 font-bold uppercase tracking-widest text-xs italic">Belum ada data reservasi</td></tr>
+                  ) : reservations.map(res => (
                     <tr key={res.id} className="hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
                       <td className="px-10 py-6 font-bold text-gray-900 dark:text-white">{res.nama_tamu}</td>
                       <td className="px-10 py-6 font-bold text-or">{res.nomor_wa}</td>
+                      <td className="px-10 py-6 text-center font-black text-gray-700 dark:text-gray-300">Meja {res.nomor_meja || '--'}</td>
                       <td className="px-10 py-6 text-center">
                         <span className="bg-gray-100 dark:bg-white/10 px-3 py-1 rounded-lg text-xs font-black">{res.jumlah_orang}</span>
                       </td>
                       <td className="px-10 py-6 text-sm font-medium text-gray-500">{new Date(res.waktu_reservasi).toLocaleString()}</td>
                       <td className="px-10 py-6 text-right">
-                        {res.status === 'cancelled' ? (
+                        {res.status === 'cancelled' || res.status === 'canceled' ? (
                           <span className="px-3 py-1 bg-red-100 text-red-600 rounded-full text-[10px] font-black uppercase tracking-widest">Cancelled</span>
-                        ) : (
+                        ) : res.status === 'confirmed' ? (
                           <div className="flex justify-end gap-2">
                             <span className="px-3 py-1 bg-green-500/10 text-green-500 rounded-full text-[10px] font-black uppercase tracking-widest">Confirmed</span>
-                            <button onClick={() => cancelReservation(res.id)} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all">
+                            <button onClick={() => updateReservationStatus(res.id, 'canceled')} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all">
                               <X size={14} />
                             </button>
+                          </div>
+                        ) : (
+                          <div className="flex justify-end gap-2">
+                             <button 
+                                onClick={() => updateReservationStatus(res.id, 'confirmed')}
+                                className="px-4 py-2 bg-green-500 text-white text-[10px] font-black uppercase tracking-widest rounded-xl hover:scale-105 transition-all flex items-center gap-2"
+                              >
+                                <CheckCircle size={12} /> Konfirmasi
+                              </button>
+                              <button onClick={() => updateReservationStatus(res.id, 'canceled')} className="p-2 bg-red-50 text-red-500 rounded-lg hover:bg-red-500 hover:text-white transition-all">
+                                <X size={14} />
+                              </button>
                           </div>
                         )}
                       </td>
@@ -915,6 +1024,41 @@ export default function AdminPage({ setPage, showToast, activeOrder, setActiveOr
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* CUSTOM CONFIRMATION MODAL */}
+      {confirmModal.show && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm animate-fadeIn">
+          <div className="bg-white dark:bg-[#1A1A1A] w-full max-w-sm rounded-[2.5rem] p-10 shadow-2xl relative animate-bounceIn border border-white/10 text-center">
+            <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6 ${
+              confirmModal.type === 'danger' ? 'bg-red-50 text-red-500' : 'bg-green-50 text-green-500'
+            }`}>
+              {confirmModal.type === 'danger' ? <AlertTriangle size={40} /> : <CheckCircle size={40} />}
+            </div>
+            
+            <h3 className="text-2xl font-syne font-black text-gray-900 dark:text-white mb-2">{confirmModal.title}</h3>
+            <p className="text-gray-500 text-sm mb-8 font-medium leading-relaxed">{confirmModal.desc}</p>
+            
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setConfirmModal({ ...confirmModal, show: false })}
+                className="flex-1 py-4 bg-gray-50 dark:bg-white/5 text-gray-400 font-black rounded-2xl hover:bg-gray-100 transition-all text-xs uppercase tracking-widest"
+              >
+                Batal
+              </button>
+              <button 
+                onClick={() => {
+                  confirmModal.onConfirm();
+                  setConfirmModal({ ...confirmModal, show: false });
+                }}
+                className={`flex-1 py-4 text-white font-black rounded-2xl shadow-lg transition-all text-xs uppercase tracking-widest ${
+                  confirmModal.type === 'danger' ? 'bg-red-500 shadow-red-500/20' : 'bg-green-500 shadow-green-500/20'
+                }`}
+              >
+                Yakin
+              </button>
+            </div>
           </div>
         </div>
       )}

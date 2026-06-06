@@ -12,7 +12,6 @@ export const KEYS = {
   TABLE:         'mejakita_table',
   THEME:         'mejakita_theme',
   LAST_PAGE:     'mejakita_last_page',
-  RESERVATIONS:  'mejakita_reservations',
 }
 
 // Scoped keys generator
@@ -27,7 +26,8 @@ export const USER_KEYS = {
   ORDERS:       'orders',
   HISTORY:      'history',
   REVIEWS:      'reviews',
-  LOYALTY:      'loyalty'
+  LOYALTY:      'loyalty',
+  RESERVATIONS: 'reservations'
 }
 
 // ─── CONSTANTS ───
