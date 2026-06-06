@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import Confetti from '../components/Confetti'
 import socket from '../utils/socket'
 import { API, CDN, PHS, fmt, isIn, getUID, getPoin, authH, updateActiveSession, KEYS, saveOrderToLocal, getName, COMPLETED_STATUS, getScopedKey, USER_KEYS } from '../utils/auth'
-import { ShoppingBag, CreditCard, Wallet, MapPin, Star, ArrowRight, Trash2, CheckCircle2, ChevronLeft, Clock, Download, Phone, MessageSquare, Camera, Send, X, Flame, CupSoda, UtensilsCrossed, Award, Smartphone, DollarSign, NotebookPen, Sparkles } from 'lucide-react'
+import { ShoppingBag, CreditCard, Wallet, MapPin, Star, ArrowRight, Trash2, CheckCircle2, ChevronLeft, Clock, Download, Phone, MessageSquare, Camera, Send, X, Flame, CupSoda, UtensilsCrossed, Award, Smartphone, DollarSign, NotebookPen, Sparkles, AlertTriangle } from 'lucide-react'
 import { jsPDF } from "jspdf"
 import 'jspdf-autotable'
 
